@@ -1,0 +1,143 @@
+#!/bin/bash
+
+# Script to preprocess and merge three specific tab-separated files based on their headers.
+# Usage: ./script.sh <file1.tsv> <file2.tsv> <file3.tsv>
+
+# Function to determine the file type based on the header
+identify_file_type() {
+    local file="$1"
+
+    # Check if the file exists and is readable
+    if [[ ! -r "$file" ]]; then
+        echo "Error: File '$file' does not exist or is not readable." >&2
+        return 1
+    fi
+
+    local header=$(head -n 1 "$file")
+    
+    # Check if the file is tab-separated
+    if [[ "$header" != *$'\t'* ]]; then
+        echo "Error: File '$file' is not in tab-separated format." >&2
+        return 1
+    fi
+    
+    # Check consistency of cell count
+    local num_cells=$(echo "$header" | awk -F'\t' '{print NF}')
+    local inconsistent_lines=$(awk -F'\t' -v num_cells="$num_cells" 'NF != num_cells {print NR}' "$file")
+    if [[ -n "$inconsistent_lines" ]]; then
+        echo "Error: Inconsistent number of cells found in lines: $inconsistent_lines in file '$file'." >&2
+        return 1
+    fi
+    
+    # Check for specific headers to determine file type
+    if [[ "$header" == *"Cantril ladder"* && "$header" == *"GDP per capita, PPP (constant 2017 international $)"* ]]; then
+        echo "file1"
+    elif [[ "$header" == *"Homicide rate per 100,000 population - Both sexes - All ages"* ]]; then
+        echo "file2"
+    elif [[ "$header" == *"Life expectancy - Sex: all - Age: at birth - Variant: estimates"* && "$header" == *"Cantril ladder score"* ]]; then
+        echo "file3"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to preprocess file1
+preprocess_file1() {
+    local file="$1"
+    awk -F'\t' 'NR==1 {
+        print "CodeYear\t" $0  # Add CodeYear as the first column
+        next
+    }
+    $2 != "" && $3 >= 2011 && $3 <= 2021 {
+        print $2 " " $3 "\t" $0
+    }' "$file" | sort -k1,1
+}
+
+# Function to preprocess file2
+preprocess_file2() {
+    local file="$1"
+    awk -F'\t' 'NR==1 {
+        print "CodeYear\t" $0  # Add CodeYear as the first column
+        next
+    }
+    $2 != "" && $3 >= 2011 && $3 <= 2021 {
+        print $2 " " $3 "\t" $0
+    }' "$file" | sort -k1,1
+}
+
+# Function to preprocess file3
+preprocess_file3() {
+    local file="$1"
+    awk -F'\t' 'NR==1 {
+        print "CodeYear\t" $0  # Add CodeYear as the first column
+        next
+    }
+    $2 != "" && $3 >= 2011 && $3 <= 2021 {
+        print $2 " " $3 "\t" $0
+    }' "$file" | sort -k1,1
+}
+
+# Ensure three files are provided
+if [[ $# -ne 3 ]]; then
+    echo "Usage: $0 <file1.tsv> <file2.tsv> <file3.tsv>" >&2
+    exit 1
+fi
+
+# Initialize variables to store the filenames
+file1=""
+file2=""
+file3=""
+
+# Identify each file
+for file in "$@"; do
+    file_type=$(identify_file_type "$file")
+    if [[ $? -ne 0 ]]; then
+        exit 1
+    fi
+    case "$file_type" in
+        "file1")
+            file1="$file"
+            ;;
+        "file2")
+            file2="$file"
+            ;;
+        "file3")
+            file3="$file"
+            ;;
+        *)
+            echo "Error: Unknown file format: $file" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Check that all file types are identified
+if [[ -z "$file1" || -z "$file2" || -z "$file3" ]]; then
+    echo "Error: One or more input files could not be identified." >&2
+    exit 1
+fi
+
+# Preprocess the files and create temporary files
+temp_file1=$(mktemp) || { echo "Error: Failed to create temporary file." >&2; exit 1; }
+temp_file2=$(mktemp) || { echo "Error: Failed to create temporary file." >&2; exit 1; }
+temp_file3=$(mktemp) || { echo "Error: Failed to create temporary file." >&2; exit 1; }
+
+preprocess_file1 "$file1" > "$temp_file1"
+preprocess_file2 "$file2" > "$temp_file2"
+preprocess_file3 "$file3" > "$temp_file3"
+
+# Merge the files and print the output to stdout
+temp_merged=$(mktemp) || { echo "Error: Failed to create temporary file." >&2; exit 1; }
+join -t $'\t' -1 1 -2 1 "$temp_file1" "$temp_file2" > "$temp_merged"
+join -t $'\t' -1 1 -2 1 "$temp_merged" "$temp_file3" | awk -F'\t' 'BEGIN {
+    OFS = FS
+    print "Entity", "Code", "Year", "GDP per capita, PPP (constant 2017 international $)", "Population (historical estimates)", "Homicide rate per 100,000 population - Both sexes - All ages", "Life expectancy - Sex: all - Age: at birth - Variant: estimates", "Cantril Ladder score"
+}
+{
+    split($NF, arr, " ")
+    print $2, $3, $4, $6, $7, $11, $16, $5
+}'
+
+# Clean up temporary files
+rm -f "$temp_file1" "$temp_file2" "$temp_file3" "$temp_merged"
+#
